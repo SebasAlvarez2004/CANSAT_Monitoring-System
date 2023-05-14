@@ -3,16 +3,20 @@
 //UNIVERSIDAD EIA 2023
 
 #include <Wire.h>  // Wire library - used for I2C communication
-#include <SPI.h>  // incluye libreria SPI para comunicacion con el modulo
-#include <RH_NRF24.h> // incluye la seccion NRF24 de la libreria RadioHead
+#include <SPI.h>  
+#include <nRF24L01.h>
+#include <RF24.h>
 #include <Adafruit_BMP280.h>
 #include <AHT10.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <ArduinoJson.h>
+#include <DFRobot_MICS.h>
+#define CALIBRATION_TIME   3  // Default calibration time is three minutes for MICS5524
+
 //Buzzer
-const int tonePin = 2;
-int available = 0;
+const int tonePin = 27; //From buzzer
+int available = 0; //from active buzzer
 //General
 String str_datos; //Data_String_type
 String strTemperature, strHumidity, strPressure, strDustDensity, straccelerometer_x, straccelerometer_y, straccelerometer_z, strgyro_x, strgyro_y, strgyro_z;
@@ -22,12 +26,17 @@ AHT10 myAHT20(AHT10_ADDRESS_0X38, AHT20_SENSOR);
 float temperature;
 float humidity;
 float pressure;
+float altitude;
+float P0; //Calc Atitude level floor
 //MPU6050
 Adafruit_MPU6050 mpu;
 float accelerometer_x, accelerometer_y, accelerometer_z; // variables for accelerometer raw data
 float gyro_x, gyro_y, gyro_z; // variables for gyro raw data
 //NRF42L01
-RH_NRF24 nrf24(4,5);  
+#define CE_PIN 4
+#define CSN_PIN 5
+RF24 nrf24(CE_PIN, CSN_PIN); 
+byte direccion[5] ={'c','a','n','a','l'}; //Direccion of channel comunication
 //PM2.5
 int measurePin = 34;  
 int ledPower = 32;
@@ -37,21 +46,54 @@ int sleeptime = 9680;
 float voMeasured = 0;
 float calcVoltage = 0;
 float dustDensity;
-
+//GasConcentration//
+#define MICS5524 35
+#define POWER_PIN 16 
+DFRobot_MICS_ADC mics(/*adcPin*/MICS5524,/*powerPin*/POWER_PIN);
+float GasConcentration;
+ /**!
+    Type of detection gas
+    MICS-4514 You can get all gas state
+    MICS-5524 You can get the state of CO, CH4, C2H5OH, C3H8, C4H10, H2, H2S, NH3
+    MICS-2714 You can get the state of NO2, H2 ,NO
+      CO       = 0x01  (Carbon Monoxide)
+      CH4      = 0x02  (Methane)
+      C2H5OH   = 0x03  (Ethanol)
+      C3H8     = 0x04  (Propane)
+      C4H10    = 0x05  (Iso Butane)
+      H2       = 0x06  (Hydrogen)
+      H2S      = 0x07  (Hydrothion)
+      NH3      = 0x08  (Ammonia)
+      NO       = 0x09  (Nitric Oxide)
+      NO2      = 0x0A  (Nitrogen Dioxide)
+  */
+   /**!
+    Gas type for lectures in ppm:
+    MICS-4514 You can get all gas concentration
+    MICS-5524 You can get the concentration of CH4, C2H5OH, H2, NH3, CO
+    MICS-2714 You can get the concentration of NO2
+      Methane          (CH4)    (1000 - 25000)PPM
+      Ethanol          (C2H5OH) (10   - 500)PPM
+      Hydrogen         (H2)     (1    - 1000)PPM
+      Ammonia          (NH3)    (1    - 500)PPM
+      Carbon Monoxide  (CO)     (1    - 1000)PPM
+      Nitrogen Dioxide (NO2)    (0.1  - 10)PPM
+  */
 void setup() 
 {
   Serial.begin(115200);   // inicializa monitor serie a 115200 bps
   //Buzzer
   pinMode(tonePin, OUTPUT);  
+  digitalWrite(tonePin, HIGH);
   //Nrf24
-  if (!nrf24.init())    // si falla inicializacion de modulo muestra texto
-    Serial.println("fallo de inicializacion");
-  if (!nrf24.setChannel(1)) // si falla establecer canal muestra texto
-    Serial.println("fallo en establecer canal");
-  if (!nrf24.setRF(RH_NRF24::DataRate250kbps, RH_NRF24::TransmitPower0dBm)) // si falla opciones 
-    Serial.println("fallo en opciones RF");     // RF muestra texto
+  nrf24.begin();    
+  
+  nrf24.openWritingPipe(direccion);
+  Serial.println(nrf24.getPALevel());
+  Serial.println(nrf24.getDataRate());
+  Serial.println(nrf24.getCRCLength());
   //MPU6050
-  //Serial.println("Adafruit MPU6050 test!");
+  Serial.println("Adafruit MPU6050 test!");
   // Try to initialize!
   if (!mpu.begin()) {
     Serial.println("Failed to find MPU6050 chip");
@@ -59,9 +101,9 @@ void setup()
       delay(10);
     }
   }
-  //Serial.println("MPU6050 Found!");
+  Serial.println("MPU6050 Found!");
   mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
-  //Serial.print("Accelerometer range set to: ");
+  Serial.print("Accelerometer range set to: ");
   switch (mpu.getAccelerometerRange()) {
   case MPU6050_RANGE_2_G:
     Serial.println("+-2G");
@@ -70,20 +112,20 @@ void setup()
     Serial.println("+-4G");
     break;
   case MPU6050_RANGE_8_G:
-    //Serial.println("+-8G");
+    Serial.println("+-8G");
     break;
   case MPU6050_RANGE_16_G:
     Serial.println("+-16G");
     break;
   }
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-  //Serial.print("Gyro range set to: ");
+  Serial.print("Gyro range set to: ");
   switch (mpu.getGyroRange()) {
   case MPU6050_RANGE_250_DEG:
     Serial.println("+- 250 deg/s");
     break;
   case MPU6050_RANGE_500_DEG:
-    //Serial.println("+- 500 deg/s");
+    Serial.println("+- 500 deg/s");
     break;
   case MPU6050_RANGE_1000_DEG:
     Serial.println("+- 1000 deg/s");
@@ -92,8 +134,8 @@ void setup()
     Serial.println("+- 2000 deg/s");
     break;
   }
-  mpu.setFilterBandwidth(MPU6050_BAND_5_HZ);
-  //Serial.print("Filter bandwidth set to: ");
+  mpu.setFilterBandwidth(MPU6050_BAND_260_HZ);
+  Serial.print("Filter bandwidth set to: ");
   switch (mpu.getFilterBandwidth()) {
   case MPU6050_BAND_260_HZ:
     Serial.println("260 Hz");
@@ -114,7 +156,7 @@ void setup()
     Serial.println("10 Hz");
     break;
   case MPU6050_BAND_5_HZ:
-    //Serial.println("5 Hz");
+    Serial.println("5 Hz");
     break;
   }
   //BMP280 +AHT20  
@@ -127,9 +169,18 @@ void setup()
     Serial.println(F("Could not find a valid BMP280 sensor, check wiring!"));
     while (1);
   }
+  P0 = bmp.readPressure()/100; // Altitud = 0 && Read initial pressure in hPa 
   //PM2.5
- pinMode(ledPower,OUTPUT);
-  
+  pinMode(ledPower,OUTPUT);
+  //MICS5524
+  while(!mics.begin()){
+    Serial.println("NO Deivces !");
+    delay(1000);
+  }
+  /*while(!mics.warmUpTime(CALIBRATION_TIME)){
+    //Serial.println("Please wait until the warm-up time is over!");
+    delay(1000);
+  }
   /* Default settings from datasheet. */
   bmp.setSampling(Adafruit_BMP280::MODE_NORMAL, /* Operating Mode. */
   Adafruit_BMP280::SAMPLING_X2, /* Temp. oversampling */
@@ -142,8 +193,9 @@ void setup()
 
 void loop() {
   //Json format
-  String JsonData;
-  if (nrf24.init() && nrf24.setChannel(2)&& nrf24.setRF(RH_NRF24::DataRate250kbps, RH_NRF24::TransmitPower0dBm) ){
+  //String JsonData;
+  float datos[12]; //Data array
+  if (nrf24.begin()){
     //Activate Buzzer
     if(available == 0){
       for (int i =0; i <= 2; i++) {
@@ -151,6 +203,7 @@ void loop() {
         delay(100);
         digitalWrite(tonePin, LOW);
         delay(100);
+        digitalWrite(tonePin, HIGH); //Off Buzzere
       } 
       available ++;
     }
@@ -170,45 +223,78 @@ void loop() {
     //BMP280+AHT20
     temperature = myAHT20.readTemperature();
     humidity = myAHT20.readHumidity();
-    pressure = bmp.readPressure();
+    pressure = bmp.readPressure()* 0.01;//Lecture in hPa Range: (0 - 1200 hPa) // for lectures in Pa delete : (* 0.01)
+    //Alt to level floor: In m
+    //altitude = bmp.readAltitude(P0);
+    altitude = bmp.readAltitude(841.51511);//Read altitude respect level Sea //MEDELLÍN
     //PM2.5
-    digitalWrite(ledPower,LOW);
-    delayMicroseconds(samplingtime);
-    voMeasured = analogRead(measurePin);
-    delayMicroseconds(deltatime);
-    digitalWrite(ledPower,HIGH);
-    delayMicroseconds(sleeptime);
-    calcVoltage = voMeasured * (5.0/ 1024.0); // 0 - 5V mapped to 0- 1023 integer values
-    dustDensity = 170* calcVoltage - 0.1; 
-    //Print data
-    //Serial.println("Temperature: " + strTemperature + " Humidity: " + strHumidity + " Pressure: " + strPressure + " dustDensity: "+ strDustDensity  + " Ax: "+ straccelerometer_x + " Ay: " + straccelerometer_y + " Az: " + straccelerometer_z + " Gx: " + strgyro_x + " Gy: " + strgyro_y + " Gz: " + strgyro_z);
-    //String transform data:
-    strTemperature = String(temperature);
-    strHumidity = String(humidity);
-    strPressure = String(pressure);
-    strDustDensity = String(dustDensity);
-    straccelerometer_x = String(accelerometer_x);
-    straccelerometer_y = String(accelerometer_y);
-    straccelerometer_z = String(accelerometer_z);
-    strgyro_x = String(gyro_x);
-    strgyro_y = String(gyro_y);
-    strgyro_z = String(gyro_z);
-    //convert to Json and print___
-    DynamicJsonDocument data(JSON_OBJECT_SIZE(11));
-        data["Temperature"] = temperature;
-        data["Humidity"] = humidity;
-        data["Pressure"] = pressure;
-        data["DustDensity"] = dustDensity;
-    serializeJson(data, JsonData);
-    Serial.println(JsonData);
-    //Transmitter data NRF24___
-    str_datos = strTemperature + "," + strHumidity+ "," + strPressure + "," + strDustDensity + "," + straccelerometer_x + "," + straccelerometer_y + "," + straccelerometer_z + "," + strgyro_x + "," + strgyro_y + "," + strgyro_z; // concatena valores separados mediante una coma
-    const char *datos = str_datos.c_str(); //String to C
-  
-    nrf24.send((const uint8_t*)datos, strlen(datos));   //send text
-    nrf24.waitPacketSent();   // wait send data
+    digitalWrite(ledPower,LOW); //Turn ON the led
+    delayMicroseconds(samplingtime); // wait 0.28 ms = 280 us
+    voMeasured = analogRead(measurePin); //measure the peak of the output pulse
+    delayMicroseconds(deltatime); // wait 40 us
+    digitalWrite(ledPower,HIGH); //turn OFF the led
+    delayMicroseconds(sleeptime); //Delay sleep time
+    calcVoltage = voMeasured * (5.0/ 4095.0); // 0 - 5V mapped to 0- 4095 integer values with ESP32
+    dustDensity = 170* calcVoltage - 0.1; //in ug/m3
+    //MICS5524
+    /*
+    float ch4 = mics.getGasData(CH4);
+    float c2h5oh = mics.getGasData(C2H5OH);
+    float h2 = mics.getGasData(H2);
+    float nh3 = mics.getGasData(NH3);
+    float co = mics.getGasData(CO);
+    */
+    float gasread = analogRead(35); // gas concentration
+    GasConcentration = gasread/4098 * 100;
+    //Download datos in array
+    datos[0] = temperature;
+    datos[1] = humidity;
+    datos[2] = pressure;
+    datos[3] = dustDensity;
+    datos[4] = GasConcentration;
+    datos[5] = altitude;
+    datos[6] = accelerometer_x;
+    datos[7] = accelerometer_y;
+    datos[8] = accelerometer_z;
+    datos[9] = gyro_x;
+    datos[10] = gyro_y;
+    datos[11] = gyro_z;
+
+    //Send data to base
+    bool ok = nrf24.write(datos, sizeof(datos));
+    if(ok)
+      {
+        Serial.print("Datos enviados "); 
+        Serial.print(datos[0]); 
+        Serial.print(" , "); 
+        Serial.print(datos[1]); 
+        Serial.print(" , ");
+        Serial.print(datos[2]); 
+        Serial.print(" , "); 
+        Serial.print(datos[3]); 
+        Serial.print(" , ");
+        Serial.print(datos[4]); 
+        Serial.print(" , "); 
+        Serial.print(datos[5]); 
+        Serial.print(" , ");
+        Serial.print(datos[6]); 
+        Serial.print(" , "); 
+        Serial.print(datos[7]); 
+        Serial.print(" , ");
+        Serial.print(datos[8]); 
+        Serial.print(" , "); 
+        Serial.print(datos[9]); 
+        Serial.print(" , ");
+        Serial.print(datos[10]); 
+        Serial.print(" , "); 
+        Serial.println(datos[11]); 
+      }else
+      {
+       Serial.println("no se ha podido enviar");
+      }
    }else {
-    Serial.println("Desconectado...");
+    Serial.println("Disconected...");
+    
     digitalWrite(tonePin, HIGH);
     delay(500);
     digitalWrite(tonePin, LOW);
