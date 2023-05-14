@@ -1,14 +1,17 @@
-#include <SPI.h>  // incluye libreria SPI para comunicacion con el modulo
-#include <RH_NRF24.h> // incluye la seccion NRF24 de la libreria RadioHead
+#include <SPI.h> // library SPI from comunication with module
+#include <nRF24L01.h>
+#include <RF24.h>
 #include <ArduinoJson.h>
 
 const int led = 5;
-String str_datos; //Data_String_type
-String strTemperature, strHumidity, strPressure, strDustDensity;
-String strAX, strAY, strAZ, strGX, strGY, strGZ;
+//Nrf24
+#define CE_PIN 8
+#define CSN_PIN 10
+byte direccion[5] ={'c','a','n','a','l'}; //Channel to read
+RF24 nrf24(CE_PIN, CSN_PIN);  // bus SPI
+//Data Variables
+float datos[12];
 
-RH_NRF24 nrf24;   // crea objeto con valores por defecto para bus SPI
-      // y pin digital numero 8 para CE
 void setup() 
 {
   Serial.begin(115200); // inicializa monitor serie a 9600 bps
@@ -17,67 +20,57 @@ void setup()
   digitalWrite(led, HIGH);
   delay(100);
   digitalWrite(led, LOW);
-  if (!nrf24.init()){    // si falla inicializacion de modulo muestra texto
-    Serial.println("fallo de inicializacion");
-  } 
-  if (!nrf24.setChannel(1)){ // si falla establecer canal muestra texto
-    Serial.println("fallo en establecer canal");
+  //NRF24L01
+  nrf24.begin();
+  if(!nrf24.begin()){
+    Serial.print("No initialized");    
   }
-  if (!nrf24.setRF(RH_NRF24::DataRate250kbps, RH_NRF24::TransmitPower0dBm)){ // si falla opciones 
-    Serial.println("fallo en opciones RF");             // RF muestra texto
-  }
+  nrf24.openReadingPipe(1, direccion); //Open to channel lecture
+  //Start listening cansat
+  nrf24.startListening();
   //Serial.println("Base iniciada");  // texto para no comenzar con ventana vacia
+  Serial.println(nrf24.getPALevel());
+  nrf24.setDataRate(0); // 2Mbs
+  Serial.println(nrf24.getDataRate());
 }
 
 void loop()
-{
+{  
+  uint8_t numero_canal;
   String JsonData;
-  if (nrf24.available())      // si hay informacion disponible
-  {     
-    digitalWrite(led, HIGH);  
-    uint8_t buf[64];      // buffer
-    uint8_t buflen = sizeof(buf); // obtiene longitud del buffer
-    if (nrf24.recv(buf, &buflen))      // si hay informacion valida en el buffer
-    {
-      str_datos = String((char*)buf); // almacena en str_datos datos recibidos
-      for (int i = 0; i < str_datos.length(); i++) {  // bucle recorre str_datos desde el inicio
-        if (str_datos.substring(i, i+1) == ",") { // si en el indice hay una coma
-          strTemperature = str_datos.substring(0, i);  // obtiene desde indice 0 hasta una posicion anterior
-          strHumidity = str_datos.substring(i+1, i+6); // obtiene desde indice posterior a la coma
-          strPressure = str_datos.substring(i+7, i+15);
-          strDustDensity = str_datos.substring(i+16, i+23);
-          strAX = str_datos.substring(i+24, i+28);
-          strAY = str_datos.substring(i+29, i+34);
-          strAZ = str_datos.substring(i+35, i+39);
-          strGX = str_datos.substring(i+40, i+45);
-          strGY = str_datos.substring(i+46, i+50);
-          strGZ = str_datos.substring(i+51, i+55);
-          break;// hasta el final del string y sale del bucle
-          }
-        }
-      /*
-      Serial.print("Temperature = " + strTemperature);
-      Serial.print(" Humidity = " + strHumidity);
-      Serial.print(" Pressure = " + strPressure);
-      Serial.println(" DustDensity = " + strDustDensity);*/
-      DynamicJsonDocument data(JSON_OBJECT_SIZE(11));
-        data["Temperature"] = strTemperature;
-        data["Humidity"] = strHumidity;
-        data["Pressure"] = strPressure;
-        data["DustDensity"] = strDustDensity;
-        data["AcelerationX"] = strAX;
-        data["AcelerationY"] = strAY;
-        data["AcelerationZ"] = strAZ;
-        data["GyroX"] = strGX;
-        data["GyroY"] = strGY;
-        data["GyroZ"] = strGZ;
-      serializeJson(data, JsonData);
-      Serial.print(JsonData);
-    }
-    else// si falla la recepcion
-    {
-      Serial.println("fallo en recepcion"); // muestra texto
-    }
+  if (nrf24.available()) // if exist information available
+  { 
+    digitalWrite(led, 1);
+    //Read data and save in data[] array 
+    nrf24.read(datos,sizeof(datos));
+    //convert to Json and print___
+    DynamicJsonDocument data(JSON_OBJECT_SIZE(12));
+        data["Temperature"] = datos[0];
+        data["Humidity"] = datos[1];
+        data["Pressure"] = datos[2];
+        data["DustDensity"] = datos[3];
+        data["GasConcentration"] = datos[4];
+        data["altitude"] = datos[5];
+        data["Accelerometer_x"] = datos[6];
+        data["Accelerometer_y"] = datos[7];
+        data["Accelerometer_z"] = datos[8];
+        data["Gyro_x"] = datos[9];
+        data["Gyro_y"] = datos[10];
+        data["Gyro_z"] = datos[11];
+        /*
+        data["CH4"] = ch4;
+        data["C2H5OH"] = c2h5oh;
+        data["H2"] = h2;
+        data["NH3"] = nh3;
+        data["CO"] = co; 
+        */    
+    serializeJson(data, JsonData);
+    Serial.println(JsonData);
+    
   }
-  
+  else{
+    //Serial.println("None information");
+    digitalWrite(led, 0);
+    delay(50);
+  }
 }
